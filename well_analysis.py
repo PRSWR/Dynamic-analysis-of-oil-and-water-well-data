@@ -6,6 +6,7 @@ Pure-Python implementation with zero external dependencies. Provides:
 - Decline-curve estimates, water cut, and cumulative production.
 - Text-based charts for quick visualization.
 - Demo interface that runs end-to-end with a single command.
+- Minimal Tkinter GUI for interactive exploration.
 """
 import argparse
 import csv
@@ -17,6 +18,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except Exception:
+    tk = None  # pragma: no cover - GUI unavailable in headless environments
+    ttk = None
 
 random.seed(42)
 
@@ -238,6 +246,80 @@ def format_summary_table(summary: Dict[str, Dict[str, float]]) -> str:
     return "\n".join(lines)
 
 
+def run_gui(data_path: Path, outdir: Path, days: int) -> None:
+    if tk is None or ttk is None:
+        raise RuntimeError("Tkinter is not available in this environment.")
+
+    def refresh(regenerate: bool = False) -> None:
+        nonlocal summary, charts_cache
+        if regenerate or not data_path.exists():
+            data = generate_synthetic_data(days=days)
+            write_csv(data_path, data)
+        records_local = load_csv(data_path)
+        summary = analyze_dataset(records_local, outdir)
+        charts_cache = {well: (outdir / f"{well}_charts.txt").read_text() for well in summary}
+        populate_summary()
+        populate_wells()
+        show_chart(selected_well.get())
+
+    def populate_summary() -> None:
+        summary_text.configure(state="normal")
+        summary_text.delete("1.0", tk.END)
+        summary_text.insert(tk.END, format_summary_table(summary))
+        summary_text.configure(state="disabled")
+
+    def populate_wells() -> None:
+        menu = well_menu["menu"]
+        menu.delete(0, "end")
+        for well in summary:
+            menu.add_command(label=well, command=lambda w=well: on_select(w))
+        if summary:
+            selected_well.set(next(iter(summary)))
+
+    def show_chart(well: str) -> None:
+        chart_text.configure(state="normal")
+        chart_text.delete("1.0", tk.END)
+        chart_text.insert(tk.END, charts_cache.get(well, "No chart available"))
+        chart_text.configure(state="disabled")
+
+    def on_select(well: str) -> None:
+        selected_well.set(well)
+        show_chart(well)
+
+    root = tk.Tk()
+    root.title("Well Analyzer (GUI Demo)")
+
+    summary_frame = ttk.LabelFrame(root, text="Summary")
+    summary_frame.pack(fill="both", expand=False, padx=10, pady=10)
+
+    summary_text = tk.Text(summary_frame, height=10, width=80)
+    summary_text.pack(fill="both", expand=True)
+    summary_text.configure(state="disabled")
+
+    controls = ttk.Frame(root)
+    controls.pack(fill="x", padx=10)
+
+    ttk.Button(controls, text="Analyze", command=lambda: refresh(False)).pack(side="left", padx=5)
+    ttk.Button(controls, text="Regenerate Data", command=lambda: refresh(True)).pack(side="left", padx=5)
+
+    selected_well = tk.StringVar()
+    ttk.Label(controls, text="Well:").pack(side="left", padx=5)
+    well_menu = ttk.OptionMenu(controls, selected_well, "")
+    well_menu.pack(side="left")
+
+    chart_frame = ttk.LabelFrame(root, text="Charts")
+    chart_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+    chart_text = tk.Text(chart_frame, height=20, width=80)
+    chart_text.pack(fill="both", expand=True)
+    chart_text.configure(state="disabled")
+
+    summary, charts_cache = {}, {}
+    refresh()
+
+    root.mainloop()
+
+
 def ensure_dataset(path: Path, days: int) -> None:
     if path.exists():
         return
@@ -307,6 +389,14 @@ def parse_args() -> argparse.Namespace:
     demo.add_argument("--outdir", type=Path, default=Path("results"), help="Where to write charts and summaries")
     demo.add_argument("--days", type=int, default=180, help="Days of synthetic data to generate if needed")
 
+    gui = subparsers.add_parser("gui", help="Launch a Tkinter GUI for quick exploration")
+    gui.add_argument("--input", type=Path, default=Path("data/well_data.csv"), help="Dataset path (created if missing)")
+    gui.add_argument("--outdir", type=Path, default=Path("results"), help="Where to write charts and summaries")
+    gui.add_argument("--days", type=int, default=180, help="Days of synthetic data to generate if needed")
+
+    pkg = subparsers.add_parser("package", help="Build a single-file .pyz bundle")
+    pkg.add_argument("--output", type=Path, default=Path("dist/well_analyzer.pyz"), help="Output bundle path")
+
     return parser.parse_args()
 
 
@@ -352,6 +442,10 @@ def main() -> None:
         print(f"Analysis artifacts saved to {args.outdir}")
     elif args.command == "demo":
         run_demo(args.input, args.outdir, args.days)
+    elif args.command == "gui":
+        run_gui(args.input, args.outdir, args.days)
+    elif args.command == "package":
+        build_zipapp(args.output)
 
 
 if __name__ == "__main__":
